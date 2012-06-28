@@ -78,8 +78,6 @@
 	#include "lists.h"
 #endif
 
-static atomic_t g_sPagePoolEntryCount = ATOMIC_INIT(0);
-
 #if defined(DEBUG_LINUX_MEMORY_ALLOCATIONS)
 typedef enum {
     DEBUG_MEM_ALLOC_TYPE_KMALLOC,
@@ -123,14 +121,8 @@ static DEBUG_MEM_ALLOC_REC *g_MemoryRecords;
 static IMG_UINT32 g_WaterMarkData[DEBUG_MEM_ALLOC_TYPE_COUNT];
 static IMG_UINT32 g_HighWaterMarkData[DEBUG_MEM_ALLOC_TYPE_COUNT];
 
-static IMG_UINT32 g_SysRAMWaterMark;		
-static IMG_UINT32 g_SysRAMHighWaterMark;	
-
-static inline IMG_UINT32
-SysRAMTrueWaterMark(void)
-{
-	return g_SysRAMWaterMark + PAGES_TO_BYTES(atomic_read(&g_sPagePoolEntryCount));
-}
+static IMG_UINT32 g_SysRAMWaterMark;
+static IMG_UINT32 g_SysRAMHighWaterMark;
 
 static IMG_UINT32 g_IOMemWaterMark;
 static IMG_UINT32 g_IOMemHighWaterMark;
@@ -212,6 +204,7 @@ static LinuxKMemCache *g_PsLinuxPagePoolCache;
 
 static LIST_HEAD(g_sPagePoolList);
 static int g_iPagePoolMaxEntries;
+static atomic_t g_sPagePoolEntryCount = ATOMIC_INIT(0);
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,15))
 static IMG_VOID ReservePages(IMG_VOID *pvAddress, IMG_UINT32 ui32Length);
@@ -227,16 +220,9 @@ static IMG_VOID DebugLinuxMemAreaRecordRemove(LinuxMemArea *psLinuxMemArea);
 #endif
 
 
-static inline IMG_BOOL
-AreaIsUncached(IMG_UINT32 ui32AreaFlags)
+static inline IMG_BOOL AreaIsUncached(IMG_UINT32 ui32AreaFlags)
 {
 	return (ui32AreaFlags & (PVRSRV_HAP_WRITECOMBINE | PVRSRV_HAP_UNCACHED)) != 0;
-}
-
-static inline IMG_BOOL
-CanFreeToPool(LinuxMemArea *psLinuxMemArea)
-{
-	return AreaIsUncached(psLinuxMemArea->ui32AreaFlags) && !psLinuxMemArea->bNeedsCacheInvalidate;
 }
 
 IMG_VOID *
@@ -318,14 +304,10 @@ DebugMemAllocRecordAdd(DEBUG_MEM_ALLOC_TYPE eAllocType,
        || eAllocType == DEBUG_MEM_ALLOC_TYPE_ALLOC_PAGES
        || eAllocType == DEBUG_MEM_ALLOC_TYPE_KMEM_CACHE)
     {
-	IMG_UINT32 ui32SysRAMTrueWaterMark;
-
         g_SysRAMWaterMark += ui32Bytes;
-	ui32SysRAMTrueWaterMark = SysRAMTrueWaterMark();
-
-        if (ui32SysRAMTrueWaterMark > g_SysRAMHighWaterMark)
+        if (g_SysRAMWaterMark > g_SysRAMHighWaterMark)
         {
-            g_SysRAMHighWaterMark = ui32SysRAMTrueWaterMark;
+            g_SysRAMHighWaterMark = g_SysRAMWaterMark;
         }
     }
     else if (eAllocType == DEBUG_MEM_ALLOC_TYPE_IOREMAP
@@ -638,7 +620,7 @@ FreePageToLinux(struct page *psPage)
 }
 
 
-#if (PVR_LINUX_MEM_AREA_POOL_MAX_PAGES != 0)
+#if defined(PVR_LINUX_MEM_AREA_POOL_ALLOW_SHRINK)
 static DEFINE_MUTEX(g_sPagePoolMutex);
 
 static inline void
@@ -659,7 +641,7 @@ PagePoolTrylock(void)
 	return mutex_trylock(&g_sPagePoolMutex);
 }
 
-#else	
+#else
 static inline void
 PagePoolLock(void)
 {
@@ -675,8 +657,7 @@ PagePoolTrylock(void)
 {
 	return 1;
 }
-#endif	
-
+#endif
 
 static inline void
 AddEntryToPool(LinuxPagePoolEntry *psPagePoolEntry)
@@ -714,7 +695,7 @@ RemoveFirstEntryFromPool(void)
 }
 
 static struct page *
-AllocPage(IMG_UINT32 ui32AreaFlags, IMG_BOOL *pbFromPagePool)
+AllocPage(IMG_UINT32 ui32AreaFlags, IMG_BOOL *pbFromPageCache)
 {
 	struct page *psPage = NULL;
 
@@ -732,7 +713,7 @@ AllocPage(IMG_UINT32 ui32AreaFlags, IMG_BOOL *pbFromPagePool)
 		{
 			psPage = psPagePoolEntry->psPage;
 			LinuxPagePoolEntryFree(psPagePoolEntry);
-			*pbFromPagePool = IMG_TRUE;
+			*pbFromPageCache = IMG_TRUE;
 		}
 	}
 
@@ -741,7 +722,7 @@ AllocPage(IMG_UINT32 ui32AreaFlags, IMG_BOOL *pbFromPagePool)
 		psPage = AllocPageFromLinux();
 		if (psPage)
 		{
-			*pbFromPagePool = IMG_FALSE;
+			*pbFromPageCache = IMG_FALSE;
 		}
 	}
 
@@ -750,10 +731,10 @@ AllocPage(IMG_UINT32 ui32AreaFlags, IMG_BOOL *pbFromPagePool)
 }
 
 static IMG_VOID
-FreePage(IMG_BOOL bToPagePool, struct page *psPage)
+FreePage(IMG_UINT32 ui32AreaFlags, struct page *psPage)
 {
 	
-	if (bToPagePool && atomic_read(&g_sPagePoolEntryCount) < g_iPagePoolMaxEntries)
+	if (AreaIsUncached(ui32AreaFlags) && atomic_read(&g_sPagePoolEntryCount) < g_iPagePoolMaxEntries)
 	{
 		LinuxPagePoolEntry *psPagePoolEntry = LinuxPagePoolEntryAlloc();
 		if (psPagePoolEntry)
@@ -780,9 +761,6 @@ FreePagePool(IMG_VOID)
 
 #if (PVR_LINUX_MEM_AREA_POOL_MAX_PAGES != 0)
 	PVR_TRACE(("%s: Freeing %d pages from pool", __FUNCTION__, atomic_read(&g_sPagePoolEntryCount)));
-#else
-	PVR_ASSERT(atomic_read(&g_sPagePoolEntryCount) == 0);
-	PVR_ASSERT(list_empty(&g_sPagePoolList));
 #endif
 
 	list_for_each_entry_safe(psPagePoolEntry, psTempPoolEntry, &g_sPagePoolList, sPagePoolItem)
@@ -803,8 +781,7 @@ FreePagePool(IMG_VOID)
 static struct shrinker g_sShrinker;
 #endif
 
-static int
-ShrinkPagePool(struct shrinker *psShrinker, struct shrink_control *psShrinkControl)
+static int ShrinkPagePool(struct shrinker *psShrinker, struct shrink_control *psShrinkControl)
 {
 	unsigned long uNumToScan = psShrinkControl->nr_to_scan;
 
@@ -852,13 +829,13 @@ ShrinkPagePool(struct shrinker *psShrinker, struct shrink_control *psShrinkContr
 #endif
 
 static IMG_BOOL
-AllocPages(IMG_UINT32 ui32AreaFlags, struct page ***pppsPageList, IMG_HANDLE *phBlockPageList, IMG_UINT32 ui32NumPages, IMG_BOOL *pbFromPagePool)
+AllocPages(IMG_UINT32 ui32AreaFlags, struct page ***pppsPageList, IMG_HANDLE *phBlockPageList, IMG_UINT32 ui32NumPages, IMG_BOOL *pbFromPageCache)
 {
     struct page **ppsPageList;
     IMG_HANDLE hBlockPageList;
     IMG_INT32 i;		
     PVRSRV_ERROR eError;
-    IMG_BOOL bFromPagePool = IMG_FALSE;
+    IMG_BOOL bFromPageCache = IMG_FALSE;
 
     eError = OSAllocMem(0, sizeof(*ppsPageList) * ui32NumPages, (IMG_VOID **)&ppsPageList, &hBlockPageList,
 							"Array of pages");
@@ -867,38 +844,26 @@ AllocPages(IMG_UINT32 ui32AreaFlags, struct page ***pppsPageList, IMG_HANDLE *ph
         goto failed_page_list_alloc;
     }
     
-    *pbFromPagePool = IMG_TRUE;
+    *pbFromPageCache = IMG_TRUE;
     for(i = 0; i < (IMG_INT32)ui32NumPages; i++)
     {
-        ppsPageList[i] = AllocPage(ui32AreaFlags, &bFromPagePool);
+        ppsPageList[i] = AllocPage(ui32AreaFlags, &bFromPageCache);
         if (!ppsPageList[i])
         {
             goto failed_alloc_pages;
         }
-	*pbFromPagePool &= bFromPagePool;
+	*pbFromPageCache &= bFromPageCache;
     }
 
     *pppsPageList = ppsPageList;
     *phBlockPageList = hBlockPageList;
-
-#if defined(DEBUG_LINUX_MEMORY_ALLOCATIONS)
-    DebugMemAllocRecordAdd(DEBUG_MEM_ALLOC_TYPE_ALLOC_PAGES,
-                           ppsPageList,
-                           0,
-                           0,
-                           NULL,
-                           PAGES_TO_BYTES(ui32NumPages),
-                           "unknown",
-                           0
-                          );
-#endif
 
     return IMG_TRUE;
     
 failed_alloc_pages:
     for(i--; i >= 0; i--)
     {
-        FreePage(*pbFromPagePool, ppsPageList[i]);
+        FreePage(ui32AreaFlags, ppsPageList[i]);
     }
     (IMG_VOID) OSFreeMem(0, sizeof(*ppsPageList) * ui32NumPages, ppsPageList, hBlockPageList);
 
@@ -908,18 +873,14 @@ failed_page_list_alloc:
 
 
 static IMG_VOID
-FreePages(IMG_BOOL bToPagePool, struct page **ppsPageList, IMG_HANDLE hBlockPageList, IMG_UINT32 ui32NumPages)
+FreePages(IMG_UINT32 ui32AreaFlags, struct page **ppsPageList, IMG_HANDLE hBlockPageList, IMG_UINT32 ui32NumPages)
 {
     IMG_INT32 i;
 
     for(i = 0; i < (IMG_INT32)ui32NumPages; i++)
     {
-        FreePage(bToPagePool, ppsPageList[i]);
+        FreePage(ui32AreaFlags, ppsPageList[i]);
     }
-
-#if defined(DEBUG_LINUX_MEMORY_ALLOCATIONS)
-    DebugMemAllocRecordRemove(DEBUG_MEM_ALLOC_TYPE_ALLOC_PAGES, ppsPageList, __FILE__, __LINE__);
-#endif
 
     (IMG_VOID) OSFreeMem(0, sizeof(*ppsPageList) * ui32NumPages, ppsPageList, hBlockPageList);
 }
@@ -935,7 +896,7 @@ NewVMallocLinuxMemArea(IMG_UINT32 ui32Bytes, IMG_UINT32 ui32AreaFlags)
     struct page **ppsPageList = NULL;
     IMG_HANDLE hBlockPageList;
 #endif
-    IMG_BOOL bFromPagePool = IMG_FALSE;
+    IMG_BOOL bFromPageCache;
 
     psLinuxMemArea = LinuxMemAreaStructAlloc();
     if (!psLinuxMemArea)
@@ -946,7 +907,7 @@ NewVMallocLinuxMemArea(IMG_UINT32 ui32Bytes, IMG_UINT32 ui32AreaFlags)
 #if defined(PVR_LINUX_MEM_AREA_USE_VMAP)
     ui32NumPages = RANGE_TO_PAGES(ui32Bytes);
 
-    if (!AllocPages(ui32AreaFlags, &ppsPageList, &hBlockPageList, ui32NumPages, &bFromPagePool))
+    if (!AllocPages(ui32AreaFlags, &ppsPageList, &hBlockPageList, ui32NumPages, &bFromPageCache))
     {
 	goto failed;
     }
@@ -958,6 +919,7 @@ NewVMallocLinuxMemArea(IMG_UINT32 ui32Bytes, IMG_UINT32 ui32AreaFlags)
     {
         goto failed;
     }
+    bFromPageCache = IMG_FALSE;
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,15))
     
     ReservePages(pvCpuVAddr, ui32Bytes);
@@ -979,9 +941,10 @@ NewVMallocLinuxMemArea(IMG_UINT32 ui32Bytes, IMG_UINT32 ui32AreaFlags)
 #endif
 
     
-    if (AreaIsUncached(ui32AreaFlags) && !bFromPagePool)
+    if (!bFromPageCache && AreaIsUncached(ui32AreaFlags))
     {
         OSInvalidateCPUCacheRangeKM(psLinuxMemArea, pvCpuVAddr, ui32Bytes);
+
     }
 
     return psLinuxMemArea;
@@ -991,7 +954,7 @@ failed:
 #if defined(PVR_LINUX_MEM_AREA_USE_VMAP)
     if (ppsPageList)
     {
-	FreePages(bFromPagePool, ppsPageList, hBlockPageList, ui32NumPages);
+	FreePages(psLinuxMemArea->ui32AreaFlags, ppsPageList, hBlockPageList, ui32NumPages);
     }
 #endif
     if (psLinuxMemArea)
@@ -1030,7 +993,7 @@ FreeVMallocLinuxMemArea(LinuxMemArea *psLinuxMemArea)
     ppsPageList = psLinuxMemArea->uData.sVmalloc.ppsPageList;
     hBlockPageList = psLinuxMemArea->uData.sVmalloc.hBlockPageList;
     
-    FreePages(CanFreeToPool(psLinuxMemArea), ppsPageList, hBlockPageList, ui32NumPages);
+    FreePages(psLinuxMemArea->ui32AreaFlags, ppsPageList, hBlockPageList, ui32NumPages);
 #else
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,15))
     UnreservePages(psLinuxMemArea->uData.sVmalloc.pvVmallocAddress,
@@ -1348,7 +1311,7 @@ NewAllocPagesLinuxMemArea(IMG_UINT32 ui32Bytes, IMG_UINT32 ui32AreaFlags)
     IMG_UINT32 ui32NumPages;
     struct page **ppsPageList;
     IMG_HANDLE hBlockPageList;
-    IMG_BOOL bFromPagePool;
+    IMG_BOOL bFromPageCache;
 
     psLinuxMemArea = LinuxMemAreaStructAlloc();
     if (!psLinuxMemArea)
@@ -1358,10 +1321,22 @@ NewAllocPagesLinuxMemArea(IMG_UINT32 ui32Bytes, IMG_UINT32 ui32AreaFlags)
     
     ui32NumPages = RANGE_TO_PAGES(ui32Bytes);
 
-    if (!AllocPages(ui32AreaFlags, &ppsPageList, &hBlockPageList, ui32NumPages, &bFromPagePool))
+    if (!AllocPages(ui32AreaFlags, &ppsPageList, &hBlockPageList, ui32NumPages, &bFromPageCache))
     {
 	goto failed_alloc_pages;
     }
+
+#if defined(DEBUG_LINUX_MEMORY_ALLOCATIONS)
+    DebugMemAllocRecordAdd(DEBUG_MEM_ALLOC_TYPE_ALLOC_PAGES,
+                           ppsPageList,
+                           0,
+                           0,
+                           NULL,
+                           PAGE_ALIGN(ui32Bytes),
+                           "unknown",
+                           0
+                          );
+#endif
 
     psLinuxMemArea->eAreaType = LINUX_MEM_AREA_ALLOC_PAGES;
     psLinuxMemArea->uData.sPageList.ppsPageList = ppsPageList;
@@ -1371,7 +1346,7 @@ NewAllocPagesLinuxMemArea(IMG_UINT32 ui32Bytes, IMG_UINT32 ui32AreaFlags)
     INIT_LIST_HEAD(&psLinuxMemArea->sMMapOffsetStructList);
 
     
-    psLinuxMemArea->bNeedsCacheInvalidate = AreaIsUncached(ui32AreaFlags) && !bFromPagePool;
+    psLinuxMemArea->bNeedsCacheInvalidate = AreaIsUncached(ui32AreaFlags) && !bFromPageCache;
 
 #if defined(DEBUG_LINUX_MEM_AREAS)
     DebugLinuxMemAreaRecordAdd(psLinuxMemArea, ui32AreaFlags);
@@ -1406,7 +1381,11 @@ FreeAllocPagesLinuxMemArea(LinuxMemArea *psLinuxMemArea)
     ppsPageList = psLinuxMemArea->uData.sPageList.ppsPageList;
     hBlockPageList = psLinuxMemArea->uData.sPageList.hBlockPageList;
     
-    FreePages(CanFreeToPool(psLinuxMemArea), ppsPageList, hBlockPageList, ui32NumPages);
+#if defined(DEBUG_LINUX_MEMORY_ALLOCATIONS)
+    DebugMemAllocRecordRemove(DEBUG_MEM_ALLOC_TYPE_ALLOC_PAGES, ppsPageList, __FILE__, __LINE__);
+#endif
+
+    FreePages(psLinuxMemArea->ui32AreaFlags, ppsPageList, hBlockPageList, ui32NumPages);
   
     LinuxMemAreaStructFree(psLinuxMemArea);
 }
@@ -2271,7 +2250,7 @@ static void ProcSeqShowMemoryRecords(struct seq_file *sfile,void* el)
                            "Highest Water Mark of bytes mapped via vmap",
                            g_HighWaterMarkData[DEBUG_MEM_ALLOC_TYPE_VMAP]);
 #endif
-#if (PVR_LINUX_MEM_AREA_POOL_MAX_PAGES != 0)
+#if PVR_LINUX_MEM_AREA_POOL_MAX_PAGES != 0
         seq_printf(sfile, "%-60s: %d pages\n",
                            "Number of pages in page pool",
                            atomic_read(&g_sPagePoolEntryCount));
@@ -2279,7 +2258,7 @@ static void ProcSeqShowMemoryRecords(struct seq_file *sfile,void* el)
         seq_printf( sfile, "\n");
         seq_printf(sfile, "%-60s: %d bytes\n",
                            "The Current Water Mark for memory allocated from system RAM",
-                           SysRAMTrueWaterMark());
+                           g_SysRAMWaterMark);
         seq_printf(sfile, "%-60s: %d bytes\n",
                            "The Highest Water Mark for memory allocated from system RAM",
                            g_SysRAMHighWaterMark);
@@ -2352,7 +2331,7 @@ static void ProcSeqShowMemoryRecords(struct seq_file *sfile,void* el)
 #endif
 		seq_printf(sfile,
                            "<watermark key=\"mr14\" description=\"system_ram_current\" bytes=\"%d\"/>\n",
-                           SysRAMTrueWaterMark());
+                           g_SysRAMWaterMark);
 		seq_printf(sfile,
                            "<watermark key=\"mr15\" description=\"system_ram_high\" bytes=\"%d\"/>\n",
                            g_SysRAMHighWaterMark);
@@ -2363,7 +2342,7 @@ static void ProcSeqShowMemoryRecords(struct seq_file *sfile,void* el)
                            "<watermark key=\"mr17\" description=\"system_io_high\" bytes=\"%d\"/>\n",
                            g_IOMemHighWaterMark);
 
-#if (PVR_LINUX_MEM_AREA_POOL_MAX_PAGES != 0)
+#if PVR_LINUX_MEM_AREA_POOL_MAX_PAGES != 0
 		seq_printf(sfile,
                            "<watermark key=\"mr18\" description=\"page_pool_current\" bytes=\"%d\"/>\n",
                            PAGES_TO_BYTES(atomic_read(&g_sPagePoolEntryCount)));
@@ -2677,7 +2656,7 @@ LinuxMMInit(IMG_VOID)
         goto failed;
     }
 
-#if (PVR_LINUX_MEM_AREA_POOL_MAX_PAGES != 0)
+#if PVR_LINUX_MEM_AREA_POOL_MAX_PAGES != 0
     g_iPagePoolMaxEntries = PVR_LINUX_MEM_AREA_POOL_MAX_PAGES;
     if (g_iPagePoolMaxEntries <= 0 || g_iPagePoolMaxEntries > INT_MAX/2)
     {
