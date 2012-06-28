@@ -990,7 +990,6 @@ static int twl6040_ep_event(struct snd_soc_dapm_widget *w,
 		priv->power_mode_forced = 1;
 	} else {
 		priv->power_mode_forced = 0;
-		priv->non_lp--;
 		if (!strcmp(w->name, "Earphone Enable")) {
 			priv->power_mode_forced = 0;
 #ifdef CONFIG_SOUND_CONTROL
