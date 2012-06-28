@@ -1174,12 +1174,12 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 		avg_load = ((4 * max_load) + (3 * prev_load1) + (2 * prev_load2) + prev_load3);
 		avg_load = (avg_load/10);
 //		printk("AVG-LOAD: %d \n",avg_load);
-			if (avg_load < 30) {
+			if (avg_load < 25) {
 				dbs_tuners_ins.sampling_rate = 40000;
 				dbs_tuners_ins.up_threshold = 70;
 				dbs_tuners_ins.sampling_down_factor = 1; 
 			}
-			else if (avg_load >= 40) {
+			else if (avg_load >= 30) {
 				dbs_tuners_ins.sampling_rate = 30000;
 				dbs_tuners_ins.up_threshold = 70;
 				dbs_tuners_ins.sampling_down_factor = 2; 
