@@ -490,6 +490,7 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 	}
 	if (max_load < 85 && this_dbs_info->requested_freq == 1200000)	
 		__cpufreq_driver_target(policy, 1060000,
+				CPUFREQ_RELATION_H);
 
 	if (!sr_manual) {
 		if (max_load >= 70)
