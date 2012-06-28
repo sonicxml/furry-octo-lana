@@ -351,7 +351,7 @@ MODFLAGS = -DMODULE -fgcse -fsingle-precision-constant -mtune=cortex-a8 -march=a
 CFLAGS_MODULE = $(MODFLAGS)
 AFLAGS_MODULE = $(MODFLAGS)
 LDFLAGS_MODULE = -T $(srctree)/scripts/module-common.lds
-CFLAGS_KERNEL = -fgcse -fsingle-precision-constant -mtune=cortex-a8 -march=armv7-a -mfpu=neon -ftree-vectorize
+CFLAGS_KERNEL = -fgcse -fsingle-precision-constant -mtune=cortex-a8 -march=armv7-a -mfpu=neon -ftree-vectorize -pipe
 AFLAGS_KERNEL = -fgcse -fsingle-precision-constant -mtune=cortex-a8 -march=armv7-a -mfpu=neon -ftree-vectorize
 CFLAGS_GCOV = -fprofile-arcs -ftest-coverage
 
