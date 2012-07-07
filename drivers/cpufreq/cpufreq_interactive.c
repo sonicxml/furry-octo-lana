@@ -983,7 +983,9 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		input_unregister_handler(&cpufreq_interactive_input_handler);
 		sysfs_remove_group(cpufreq_global_kobject,
 				&interactive_attr_group);
-
+		enabled = 0;
+		unregister_early_suspend(&interactive_power_suspend);
+		pr_info("[sonicxml] interactive inactive\n");
 		break;
 
 	case CPUFREQ_GOV_LIMITS:
