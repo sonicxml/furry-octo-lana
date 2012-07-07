@@ -73,8 +73,13 @@ static unsigned int enabled = 0;
 static unsigned int registration = 0;
 static unsigned int suspendfreq = 700000;
 
+// used for load averages
+static unsigned int prev_load1 = 90;
+static unsigned int prev_load2 = 90;
+static unsigned int prev_load3 = 90;
+
 /* Hi speed to bump to from lo speed when load burst (default max) */
-static u64 hispeed_freq;
+static u64 hispeed_freq = 700000;
 
 /* Go to hi speed when CPU load at or above this value. */
 #define DEFAULT_GO_HISPEED_LOAD 85
@@ -145,6 +150,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 	unsigned int new_freq;
 	unsigned int index;
 	unsigned long flags;
+	unsigned int avg_load;
 
 	smp_rmb();
 
@@ -203,7 +209,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 	if (load_since_change > cpu_load)
 		cpu_load = load_since_change;
 
-	if (cpu_load >= go_hispeed_load || boost_val) {
+/*	if (cpu_load >= go_hispeed_load || boost_val) {
 		if (pcpu->target_freq <= pcpu->policy->min) {
 			new_freq = hispeed_freq;
 		} else {
@@ -239,12 +245,12 @@ static void cpufreq_interactive_timer(unsigned long data)
 	}
 
 	new_freq = pcpu->freq_table[index].frequency;
-
+*/
 	/*
 	 * Do not scale below floor_freq unless we have been at or above the
 	 * floor frequency for the minimum sample time since last validated.
 	 */
-	if (new_freq < pcpu->floor_freq) {
+/*	if (new_freq < pcpu->floor_freq) {
 		if (cputime64_sub(pcpu->timer_run_time,
 				  pcpu->floor_validate_time)
 		    < min_sample_time) {
@@ -281,6 +287,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 		spin_unlock_irqrestore(&up_cpumask_lock, flags);
 		wake_up_process(up_task);
 	}
+*/
 
 rearm_if_notmax:
 	/*
@@ -314,6 +321,26 @@ rearm:
 
 exit:
 	return;
+
+	avg_load = ((4 * cpu_load) + (3 * prev_load1) + (2 * prev_load2) + prev_load3);
+	avg_load = (avg_load/10);
+	
+	if (avg_load <= 30) {
+		__cpufreq_driver_target(pcpu->policy, pcpu->policy->min,
+				CPUFREQ_RELATION_H);
+	}
+	else if (avg_load >= 70) {
+		__cpufreq_driver_target(pcpu->policy, 700000,
+				CPUFREQ_RELATION_H);
+	}
+	else if (avg_load >= 90) {
+		__cpufreq_driver_target(pcpu->policy, pcpu->policy->max,
+				CPUFREQ_RELATION_H); 
+	}
+
+	prev_load3 = prev_load2;
+	prev_load2 = prev_load1;
+	prev_load1 = cpu_load;
 }
 
 static void cpufreq_interactive_idle_start(void)
@@ -514,7 +541,7 @@ static void cpufreq_interactive_boost(void)
 		pcpu = &per_cpu(cpuinfo, i);
 
 		if (pcpu->target_freq < hispeed_freq) {
-			pcpu->target_freq = hispeed_freq;
+//			pcpu->target_freq = hispeed_freq;
 			cpumask_set_cpu(i, &up_cpumask);
 			pcpu->target_set_time_in_idle =
 				get_cpu_idle_time_us(i, &pcpu->target_set_time);
@@ -527,7 +554,7 @@ static void cpufreq_interactive_boost(void)
 		 * validated.
 		 */
 
-		pcpu->floor_freq = hispeed_freq;
+//		pcpu->floor_freq = hispeed_freq;
 		pcpu->floor_validate_time = ktime_to_us(ktime_get());
 	}
 
@@ -643,7 +670,7 @@ static ssize_t store_hispeed_freq(struct kobject *kobj,
 	ret = strict_strtoull(buf, 0, &val);
 	if (ret < 0)
 		return ret;
-	hispeed_freq = val;
+	hispeed_freq = 700000;
 	return count;
 }
 
@@ -840,10 +867,10 @@ static void interactive_suspend(int suspend)
 			smp_rmb();
 			if (!pcpu->governor_enabled)
 				continue;
-			__cpufreq_driver_target(pcpu->policy, hispeed_freq, CPUFREQ_RELATION_L);
+			__cpufreq_driver_target(pcpu->policy, pcpu->policy->max, CPUFREQ_RELATION_L);
 		}
 		mutex_unlock(&set_speed_lock);
-		pr_info(”[Hotplugging] interactive awake cpu1 up\n”);
+		pr_info("[sonicxml] interactive awake cpu1 up\n");
 	} else {
 		mutex_lock(&set_speed_lock);
 		for_each_cpu(cpu, &tmp_mask) {
@@ -855,7 +882,7 @@ static void interactive_suspend(int suspend)
 		}
 		if (num_online_cpus() > 1) cpu_down(1);
 		mutex_unlock(&set_speed_lock);
-		pr_info(”[Hotplugging] interactive suspended cpu1 down\n”);
+		pr_info("[sonicxml] interactive suspended cpu1 down\n");
 	}
 }
 
@@ -868,9 +895,10 @@ static void interactive_late_resume(struct early_suspend *handler) {
 }
 
 static struct early_suspend interactive_power_suspend = {
-.suspend = interactive_early_suspend,
-.resume = interactive_late_resume,
-.level = EARLY_SUSPEND_LEVEL_DISABLE_FB + 1,
+	.suspend = interactive_early_suspend,
+	.resume = interactive_late_resume,
+	.level = EARLY_SUSPEND_LEVEL_DISABLE_FB + 1,
+};
 
 static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		unsigned int event)
@@ -923,7 +951,7 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		registration = 1;
 		register_early_suspend(&interactive_power_suspend);
 		registration = 0;
-		pr_info(”[Hotplugging] interactive start\n”);
+		pr_info("[sonicxml] interactive start\n");
 
 		rc = input_register_handler(&cpufreq_interactive_input_handler);
 		if (rc)
