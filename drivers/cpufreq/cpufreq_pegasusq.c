@@ -1176,7 +1176,7 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 //		printk("AVG-LOAD: %d \n",avg_load);
 			if (avg_load >= 0) {
 				dbs_tuners_ins.sampling_rate = 25000;
-				dbs_tuners_ins.up_threshold = 65;
+				dbs_tuners_ins.up_threshold = 70;
 				dbs_tuners_ins.sampling_down_factor = 2; 
 			}
 			else if (avg_load >= 65) {
