@@ -31,6 +31,8 @@ static bool timed_out = true;
 
 static unsigned int touchoff_delay = 45000;
 
+static const unsigned int presspower_delay = 100;
+
 static void touchwake_touchoff(struct work_struct * touchoff_work);
 
 static DECLARE_DELAYED_WORK(touchoff_work, touchwake_touchoff);
@@ -50,10 +52,6 @@ static struct timeval last_powerkeypress;
 #define TOUCHWAKE_VERSION 1
 
 #define TIME_LONGPRESS 500
-
-#define POWERPRESS_DELAY 100
-
-#define POWERPRESS_TIMEOUT 1000
 
 static void touchwake_disable_touch(void)
 {
@@ -130,7 +128,7 @@ static void touchwake_late_resume(struct early_suspend * h)
 
 static struct early_suspend touchwake_suspend_data = 
     {
-	.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN,
+	.level = EARLY_SUSPEND_LEVEL_DISABLE_FB * 10,
 	.suspend = touchwake_early_suspend,
 	.resume = touchwake_late_resume,
     };
@@ -148,13 +146,11 @@ static void press_powerkey(struct work_struct * presspower_work)
 {
     input_event(powerkey_device, EV_KEY, KEY_POWER, 1);
     input_event(powerkey_device, EV_SYN, 0, 0);
-    msleep(POWERPRESS_DELAY);
+    msleep(presspower_delay);
 
     input_event(powerkey_device, EV_KEY, KEY_POWER, 0);
     input_event(powerkey_device, EV_SYN, 0, 0);
-    msleep(POWERPRESS_DELAY);
-
-    msleep(POWERPRESS_TIMEOUT);
+    msleep(presspower_delay);
 
     mutex_unlock(&lock);
 
