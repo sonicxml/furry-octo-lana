@@ -113,7 +113,7 @@ int __init omap_init_opp_table(struct omap_opp_def *opp_def,
 					__func__, opp_def->hwmod_name, r, i);
 		}
 next:
-		opp_def++;
+	opp_def++;
 	}
 
 	return 0;
