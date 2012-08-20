@@ -22,9 +22,11 @@
 #include <sound/pcm.h>
 
 #define SAMPLE_RATE 44100
+/* Each frame is two 16 bit integers (one per channel) */
+#define BYTES_PER_FRAME 4
 #define FRAMES_PER_MSEC (SAMPLE_RATE / 1000)
 
-#define IN_EP_MAX_PACKET_SIZE 384
+#define IN_EP_MAX_PACKET_SIZE 256
 
 /* Number of requests to allocate */
 #define IN_EP_REQ_COUNT 4
@@ -412,7 +414,7 @@ static void audio_data_complete(struct usb_ep *ep, struct usb_request *req)
 
 	audio_req_put(audio, req);
 
-	if (!audio->buffer_start || req->status)
+	if (!audio->buffer_start)
 		return;
 
 	audio->period_offset += req->actual;
