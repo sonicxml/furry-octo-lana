@@ -1313,6 +1313,8 @@ static void tuna_power_off(void)
 	arm_pm_restart('c', NULL);
 }
 
+int set_two_phase_freq(int cpufreq);
+
 static void __init tuna_init(void)
 {
 	int package = OMAP_PACKAGE_CBS;
@@ -1364,6 +1366,8 @@ static void __init tuna_init(void)
 		omap_mux_init_signal("mcspi4_cs0", OMAP_MUX_MODE0);
 	}
 
+	set_two_phase_freq(1060000);
+	
 	tuna_wlan_init();
 	tuna_audio_init();
 	tuna_i2c_init();
